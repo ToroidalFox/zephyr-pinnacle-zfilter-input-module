@@ -1,0 +1,6 @@
+if (CONFIG_INPUT_PINNACLE_ZFILTER)
+  zephyr_library()
+  zephyr_library_include_directories(${APPLICATION_SOURCE_DIR}/include)
+  zephyr_library_include_directories(include)
+  zephyr_library_sources(src/input/input_pinnacle_zfilter.c)
+endif()

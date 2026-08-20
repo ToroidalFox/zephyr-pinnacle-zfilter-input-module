@@ -1,0 +1,11 @@
+config INPUT_PINNACLE_ZFILTER
+	bool "Cirque Pinnacle trackpads"
+	default y
+	depends on GPIO
+	depends on SPI || I2C
+	depends on INPUT
+	depends on DT_HAS_CIRQUE_PINNACLE_ZFILTER_ENABLED
+	help
+	  Enable driver for Cirque Pinnacle trackpads with z filtering for a curved
+	  profile.
+
