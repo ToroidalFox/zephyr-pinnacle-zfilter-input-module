@@ -1,19 +1,24 @@
 // #include <zephyr/init.h>
-#include "zephyr/kernel.h"
 #include <zephyr/dt-bindings/input/input-event-codes.h>
 #include <zephyr/input/input.h>
+#include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
 #include <zephyr/sys/util.h>
 
-#if DT_ANY_INST_ON_BUS_STATUS_OKAY(i2c)
-#include <zephyr/drivers/i2c.h>
-#endif
+#include <zephyr/drivers/gpio.h>
 #if DT_ANY_INST_ON_BUS_STATUS_OKAY(spi)
 #include <zephyr/drivers/spi.h>
+#elif DT_ANY_INST_ON_BUS_STATUS_OKAY(i2c)
+#include <zephyr/drivers/i2c.h>
 #endif
+
+LOG_MODULE_REGISTER(pinnacle_zfilter, CONFIG_INPUT_LOG_LEVEL);
 
 #define PINNACLE_READ (BIT(7) | BIT(5))
 #define PINNACLE_WRITE BIT(7)
+static inline uint8_t reg_access(const uint8_t flag, const uint8_t addr) {
+  return flag | addr;
+}
 
 #define PINNACLE_FEEDCONFIG1_FEED_ENABLE BIT(0)
 #define PINNACLE_FEEDCONFIG1_DATA_MODE_ABSOLUTE BIT(1)
@@ -101,6 +106,7 @@ struct pinnacle_zfilter_config {
 #elif DT_ANY_INST_ON_BUS_STATUS_OKAY(i2c)
   struct i2c_dt_spec i2c;
 #endif
+  const struct gpio_dt_spec gpio_data_ready;
 
   uint16_t clamp_x_min;
   uint16_t clamp_x_max;
@@ -113,18 +119,40 @@ struct pinnacle_zfilter_data {
   struct k_work *callback_work;
 };
 
-static int bus_read(const struct device *device, uint8_t addr) {
+static int set_gpio_interrrupt(const struct device *device, const bool enable) {
+  const struct pinnacle_zfilter_config *config = device->config;
+  int return_val = gpio_pin_interrupt_configure_dt(
+      &config->gpio_data_ready,
+      enable ? GPIO_INT_EDGE_TO_ACTIVE : GPIO_INT_DISABLE);
+
+  if (return_val)
+    LOG_ERR("");
+
+  return return_val;
+}
+
+static int bus_read(const struct device *device, const uint8_t addr,
+                    uint8_t *buffer, const uint8_t len) {
   const struct pinnacle_zfilter_config *config = device->config;
 
 #if DT_ANY_INST_ON_BUS_STATUS_OKAY(spi)
 #elif DT_ANY_INST_ON_BUS_STATUS_OKAY(i2c)
+  return i2c_burst_read_dt(&config->i2c, reg_access(PINNACLE_READ, addr),
+                           buffer, len);
+#else
+  return 0;
 #endif
 }
 
-static int bus_write(const struct device *device, uint8_t addr, uint8_t value) {
+static int bus_write(const struct device *device, const uint8_t addr,
+                     const uint8_t value) {
   const struct pinnacle_zfilter_config *config = device->config;
 #if DT_ANY_INST_ON_BUS_STATUS_OKAY(spi)
 #elif DT_ANY_INST_ON_BUS_STATUS_OKAY(i2c)
+  return i2c_reg_write_byte_dt(&config->i2c, reg_access(PINNACLE_WRITE, addr),
+                               value);
+#else
+  return 0;
 #endif
 }
 
