@@ -7,3 +7,15 @@ properties:
       - "2x"
       - "3x"
       - "4x"
+  clamp-x-min:
+    type: int
+    default: 128
+  clamp-x-max:
+    type: int
+    default: 1920
+  clamp-y-min:
+    type: int
+    default: 64
+  clamp-y-max:
+    type: int
+    default: 1472
