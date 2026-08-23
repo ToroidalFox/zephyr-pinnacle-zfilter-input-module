@@ -19,6 +19,8 @@ LOG_MODULE_REGISTER(pinnacle_zfilter, CONFIG_INPUT_LOG_LEVEL);
 static inline uint8_t reg_access(const uint8_t flag, const uint8_t addr) {
   return flag | addr;
 }
+#define PINNACLE_FILLER_BYTE 0xFB
+#define PINNACLE_AUTO_INCREMENT 0xFC
 
 #define PINNACLE_FEEDCONFIG1_FEED_ENABLE BIT(0)
 #define PINNACLE_FEEDCONFIG1_DATA_MODE_ABSOLUTE BIT(1)
@@ -130,12 +132,41 @@ static int set_gpio_interrrupt(const struct device *device, const bool enable) {
 
   return return_val;
 }
+static int enable_gpio_interrupt(const struct device *device) {
+  return set_gpio_interrrupt(device, true);
+}
+static int disable_gpio_interrupt(const struct device *device) {
+  return set_gpio_interrrupt(device, false);
+}
 
 static int bus_read(const struct device *device, const uint8_t addr,
                     uint8_t *buffer, const uint8_t len) {
   const struct pinnacle_zfilter_config *config = device->config;
 
 #if DT_ANY_INST_ON_BUS_STATUS_OKAY(spi)
+  // send data:
+  // READ addr, AUTO_INCREMENT...
+  uint8_t send_bytes[len + 3];
+  send_bytes[0] = reg_access(PINNACLE_READ, addr);
+  memset(&send_bytes[1], PINNACLE_AUTO_INCREMENT, len + 2);
+  const struct spi_buf send_buf[1] = {{
+      .buf = send_bytes,
+      .len = len + 3,
+  }};
+  const struct spi_buf_set send = {
+      .buffers = send_buf,
+      .count = 1,
+  };
+
+  const struct spi_buf recv_buf[2] = {
+      {.buf = NULL, .len = 3},
+      {.buf = buffer, .len = len},
+  };
+  const struct spi_buf_set recv = {
+      .buffers = recv_buf,
+      .count = 2,
+  };
+  return spi_transceive_dt(&config->spi, &send, &recv);
 #elif DT_ANY_INST_ON_BUS_STATUS_OKAY(i2c)
   return i2c_burst_read_dt(&config->i2c, reg_access(PINNACLE_READ, addr),
                            buffer, len);
@@ -148,6 +179,13 @@ static int bus_write(const struct device *device, const uint8_t addr,
                      const uint8_t value) {
   const struct pinnacle_zfilter_config *config = device->config;
 #if DT_ANY_INST_ON_BUS_STATUS_OKAY(spi)
+  uint8_t send_bytes[2] = {reg_access(PINNACLE_WRITE, addr), value};
+  const struct spi_buf send_buf[1] = {{
+      .buf = send_bytes,
+      .len = 2,
+  }};
+  const struct spi_buf_set send = {.buffers = send_buf, .count = 1};
+  return spi_write_dt(&config->spi, &send);
 #elif DT_ANY_INST_ON_BUS_STATUS_OKAY(i2c)
   return i2c_reg_write_byte_dt(&config->i2c, reg_access(PINNACLE_WRITE, addr),
                                value);
