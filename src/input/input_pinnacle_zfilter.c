@@ -6,11 +6,8 @@
 #include <zephyr/sys/util.h>
 
 #include <zephyr/drivers/gpio.h>
-#if DT_ANY_INST_ON_BUS_STATUS_OKAY(spi)
-#include <zephyr/drivers/spi.h>
-#elif DT_ANY_INST_ON_BUS_STATUS_OKAY(i2c)
 #include <zephyr/drivers/i2c.h>
-#endif
+#include <zephyr/drivers/spi.h>
 
 LOG_MODULE_REGISTER(pinnacle_zfilter, CONFIG_INPUT_LOG_LEVEL);
 
@@ -56,7 +53,8 @@ const uint8_t ZMAP[YLEN][XLEN] = {
   {0, 0, 0, 0, 0, 0, 0, 0, 0},
   {0, 0, 0, 0, 0, 0, 0, 0, 0},
   {0, 0, 0, 0, 0, 0, 0, 0, 0},
-};
+};                                       // clang-format on
+
 // fixed point with 10bit frac
 #define SHIFT 10
 #define ONE (1 << SHIFT)
@@ -68,7 +66,7 @@ static uint32_t lerp(uint32_t a, uint32_t b, uint32_t t) {
 // NOTE: assumes x and y are in a valid range
 static uint8_t zmap_lerp(uint16_t x, uint16_t y) {
   // mirror other 3 quadrants so that we only have to think about one quadrant
-  if (x >= X_MAX / 2) { 
+  if (x >= X_MAX / 2) {
     x = (X_MAX - 1) - x;
   }
   if (y >= Y_MAX / 2) {
@@ -91,7 +89,6 @@ static uint8_t zmap_lerp(uint16_t x, uint16_t y) {
   return (lerp(z0t, z1t, ty) + HALF) >> SHIFT;
 }
 
-// clang-format on
 struct abs_touch {
   uint16_t x;
   uint16_t y;
@@ -103,12 +100,19 @@ static bool is_valid(struct abs_touch *touch) {
   return false;
 }
 
+struct pinnacle_bus {
+  union {
+    struct spi_dt_spec spi;
+    struct i2c_dt_spec i2c;
+  };
+  int (*read)(const struct device *device, const uint8_t addr, uint8_t *buffer,
+              const uint8_t len);
+  int (*write)(const struct device *device, const uint8_t addr,
+               const uint8_t value);
+};
+
 struct pinnacle_zfilter_config {
-#if DT_ANY_INST_ON_BUS_STATUS_OKAY(spi)
-  struct spi_dt_spec spi;
-#elif DT_ANY_INST_ON_BUS_STATUS_OKAY(i2c)
-  struct i2c_dt_spec i2c;
-#endif
+  const struct pinnacle_bus bus;
   const struct gpio_dt_spec gpio_data_ready;
 
   uint16_t clamp_x_min;
@@ -140,11 +144,10 @@ static int disable_gpio_interrupt(const struct device *device) {
   return set_gpio_interrrupt(device, false);
 }
 
-static int bus_read(const struct device *device, const uint8_t addr,
-                    uint8_t *buffer, const uint8_t len) {
+static int pinnacle_spi_read(const struct device *device, const uint8_t addr,
+                             uint8_t *buffer, const uint8_t len) {
   const struct pinnacle_zfilter_config *config = device->config;
 
-#if DT_ANY_INST_ON_BUS_STATUS_OKAY(spi)
   // send data:
   // READ addr, AUTO_INCREMENT...
   uint8_t send_bytes[len + 3];
@@ -167,32 +170,36 @@ static int bus_read(const struct device *device, const uint8_t addr,
       .buffers = recv_buf,
       .count = 2,
   };
-  return spi_transceive_dt(&config->spi, &send, &recv);
-#elif DT_ANY_INST_ON_BUS_STATUS_OKAY(i2c)
-  return i2c_burst_read_dt(&config->i2c, reg_access(PINNACLE_READ, addr),
-                           buffer, len);
-#else
-  return 0;
-#endif
+  return spi_transceive_dt(&config->bus.spi, &send, &recv);
 }
 
-static int bus_write(const struct device *device, const uint8_t addr,
-                     const uint8_t value) {
+static int pinnacle_i2c_read(const struct device *device, const uint8_t addr,
+                             uint8_t *buffer, const uint8_t len) {
   const struct pinnacle_zfilter_config *config = device->config;
-#if DT_ANY_INST_ON_BUS_STATUS_OKAY(spi)
+
+  return i2c_burst_read_dt(&config->bus.i2c, reg_access(PINNACLE_READ, addr),
+                           buffer, len);
+}
+
+static int pinnacle_spi_write(const struct device *device, const uint8_t addr,
+                              const uint8_t value) {
+  const struct pinnacle_zfilter_config *config = device->config;
+
   uint8_t send_bytes[2] = {reg_access(PINNACLE_WRITE, addr), value};
   const struct spi_buf send_buf[1] = {{
       .buf = send_bytes,
       .len = 2,
   }};
   const struct spi_buf_set send = {.buffers = send_buf, .count = 1};
-  return spi_write_dt(&config->spi, &send);
-#elif DT_ANY_INST_ON_BUS_STATUS_OKAY(i2c)
-  return i2c_reg_write_byte_dt(&config->i2c, reg_access(PINNACLE_WRITE, addr),
-                               value);
-#else
-  return 0;
-#endif
+  return spi_write_dt(&config->bus.spi, &send);
+}
+
+static int pinnacle_i2c_write(const struct device *device, const uint8_t addr,
+                              const uint8_t value) {
+  const struct pinnacle_zfilter_config *config = device->config;
+
+  return i2c_reg_write_byte_dt(&config->bus.i2c,
+                               reg_access(PINNACLE_WRITE, addr), value);
 }
 
 static void clamp_touch(const struct device *device, struct abs_touch *touch) {
