@@ -57,12 +57,13 @@ const uint8_t ZMAP[YLEN][XLEN] = {
   {0, 0, 0, 0, 0, 0, 0, 0, 0},
   {0, 0, 0, 0, 0, 0, 0, 0, 0},
 };
+// fixed point with 10bit frac
 #define SHIFT 10
+#define ONE (1 << SHIFT)
 #define HALF (1 << (SHIFT - 1))
 #define MAP_SCALE_INV (1 << (SHIFT - MAP_SCALE_SHIFT))
-// fixed point lerp with 10bit frac
 static uint32_t lerp(uint32_t a, uint32_t b, uint32_t t) {
-  return a + (((b - a) * t) >> SHIFT);
+  return (a * (ONE - t) + b * t) >> SHIFT;
 }
 // NOTE: assumes x and y are in a valid range
 static uint8_t zmap_lerp(uint16_t x, uint16_t y) {
