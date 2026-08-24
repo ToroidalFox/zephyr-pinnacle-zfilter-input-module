@@ -37,6 +37,18 @@ static inline uint8_t reg_access(const uint8_t flag, const uint8_t addr) {
 // UNUSED BIT(6)
 #define PINNACLE_FEED_CONFIG2_SWAP_X_AND_Y BIT(7)
 
+#define PINNACLE_REG_STATUS1 0x02
+#define PINNACLE_REG_ERA_VALUE 0x1B
+#define PINNACLE_REG_ERA_HIGH_BYTE 0x1C
+#define PINNACLE_REG_ERA_LOW_BYTE 0x1D
+#define PINNACLE_REG_ERA_CONTROL 0x1E
+
+#define PINNACLE_ERA_CONTROL_READ BIT(0)
+#define PINNACLE_ERA_CONTROL_WRITE BIT(1)
+// #define PINNACLE_ERA_CONTROL_READ_AUTO_INCREMENT BIT(2)
+// #define PINNACLE_ERA_CONTROL_WRITE_AUTO_INCREMENT BIT(3)
+#define PINNACLE_ERA_CONTROL_COMPLETE 0x00
+
 #define X_MAX 2048 // exclusive, actual max report 2047
 #define Y_MAX 1536 // exclusive, actual max report 1535
 
@@ -128,14 +140,14 @@ struct pinnacle_zfilter_data {
 
 static int set_gpio_interrrupt(const struct device *device, const bool enable) {
   const struct pinnacle_zfilter_config *config = device->config;
-  int return_val = gpio_pin_interrupt_configure_dt(
+  int return_code = gpio_pin_interrupt_configure_dt(
       &config->gpio_data_ready,
       enable ? GPIO_INT_EDGE_TO_ACTIVE : GPIO_INT_DISABLE);
 
-  if (return_val)
-    LOG_ERR("");
+  if (return_code < 0)
+    LOG_ERR("failed to set gpio interrupt to %s", enable ? "true" : "false");
 
-  return return_val;
+  return return_code;
 }
 static int enable_gpio_interrupt(const struct device *device) {
   return set_gpio_interrrupt(device, true);
@@ -200,6 +212,82 @@ static int pinnacle_i2c_write(const struct device *device, const uint8_t addr,
 
   return i2c_reg_write_byte_dt(&config->bus.i2c,
                                reg_access(PINNACLE_WRITE, addr), value);
+}
+
+static int pinnacle_clear_status(const struct device *device) {
+  const struct pinnacle_zfilter_config *config = device->config;
+  return config->bus.write(device, PINNACLE_REG_STATUS1, 0);
+}
+
+static int pinnacle_era_read(const struct device *device, const uint16_t addr,
+                             uint8_t *buffer) {
+  const struct pinnacle_zfilter_config *config = device->config;
+  int return_code;
+  disable_gpio_interrupt(device);
+
+  return_code = config->bus.write(device, PINNACLE_REG_ERA_HIGH_BYTE,
+                                  (uint8_t)(addr >> 8));
+  if (return_code < 0)
+    return return_code;
+  return_code = config->bus.write(device, PINNACLE_REG_ERA_LOW_BYTE,
+                                  (uint8_t)(addr & 0xFF));
+  if (return_code < 0)
+    return return_code;
+  return_code = config->bus.write(device, PINNACLE_REG_ERA_CONTROL,
+                                  PINNACLE_ERA_CONTROL_READ);
+  if (return_code < 0)
+    return return_code;
+
+  uint8_t control_code;
+  do {
+    return_code =
+        config->bus.read(device, PINNACLE_REG_ERA_CONTROL, &control_code, 1);
+    if (return_code < 0)
+      return return_code;
+  } while (control_code != PINNACLE_ERA_CONTROL_COMPLETE);
+
+  return_code = config->bus.read(device, PINNACLE_REG_ERA_VALUE, buffer, 1);
+  if (return_code < 0)
+    return return_code;
+
+  return_code = pinnacle_clear_status(device);
+  enable_gpio_interrupt(device);
+  return return_code;
+}
+
+static int pinnacle_era_write(const struct device *device, const uint16_t addr,
+                              uint8_t value) {
+  const struct pinnacle_zfilter_config *config = device->config;
+  int return_code;
+  disable_gpio_interrupt(device);
+
+  return_code = config->bus.write(device, PINNACLE_REG_ERA_VALUE, value);
+  if (return_code < 0)
+    return return_code;
+  return_code = config->bus.write(device, PINNACLE_REG_ERA_HIGH_BYTE,
+                                  (uint8_t)(addr >> 8));
+  if (return_code < 0)
+    return return_code;
+  return_code = config->bus.write(device, PINNACLE_REG_ERA_LOW_BYTE,
+                                  (uint8_t)(addr & 0xFF));
+  if (return_code < 0)
+    return return_code;
+  return_code = config->bus.write(device, PINNACLE_REG_ERA_CONTROL,
+                                  PINNACLE_ERA_CONTROL_WRITE);
+  if (return_code < 0)
+    return return_code;
+
+  uint8_t control_code;
+  do {
+    return_code =
+        config->bus.read(device, PINNACLE_REG_ERA_CONTROL, &control_code, 1);
+    if (return_code < 0)
+      return return_code;
+  } while (control_code != PINNACLE_ERA_CONTROL_COMPLETE);
+
+  return_code = pinnacle_clear_status(device);
+  enable_gpio_interrupt(device);
+  return return_code;
 }
 
 static void clamp_touch(const struct device *device, struct abs_touch *touch) {
