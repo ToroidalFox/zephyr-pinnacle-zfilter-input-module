@@ -156,6 +156,7 @@ static int disable_gpio_interrupt(const struct device *device) {
   return set_gpio_interrrupt(device, false);
 }
 
+#if DT_ANY_INST_ON_BUS_STATUS_OKAY(spi)
 static int pinnacle_spi_read(const struct device *device, const uint8_t addr,
                              uint8_t *buffer, const uint8_t len) {
   const struct pinnacle_zfilter_config *config = device->config;
@@ -184,7 +185,9 @@ static int pinnacle_spi_read(const struct device *device, const uint8_t addr,
   };
   return spi_transceive_dt(&config->bus.spi, &send, &recv);
 }
+#endif // DT_ANY_INST_ON_BUS_STATUS_OKAY(spi)
 
+#if DT_ANY_INST_ON_BUS_STATUS_OKAY(i2c)
 static int pinnacle_i2c_read(const struct device *device, const uint8_t addr,
                              uint8_t *buffer, const uint8_t len) {
   const struct pinnacle_zfilter_config *config = device->config;
@@ -192,7 +195,9 @@ static int pinnacle_i2c_read(const struct device *device, const uint8_t addr,
   return i2c_burst_read_dt(&config->bus.i2c, reg_access(PINNACLE_READ, addr),
                            buffer, len);
 }
+#endif // DT_ANY_INST_ON_BUS_STATUS_OKAY(i2c)
 
+#if DT_ANY_INST_ON_BUS_STATUS_OKAY(spi)
 static int pinnacle_spi_write(const struct device *device, const uint8_t addr,
                               const uint8_t value) {
   const struct pinnacle_zfilter_config *config = device->config;
@@ -205,7 +210,9 @@ static int pinnacle_spi_write(const struct device *device, const uint8_t addr,
   const struct spi_buf_set send = {.buffers = send_buf, .count = 1};
   return spi_write_dt(&config->bus.spi, &send);
 }
+#endif // DT_ANY_INST_ON_BUS_STATUS_OKAY(spi)
 
+#if DT_ANY_INST_ON_BUS_STATUS_OKAY(i2c)
 static int pinnacle_i2c_write(const struct device *device, const uint8_t addr,
                               const uint8_t value) {
   const struct pinnacle_zfilter_config *config = device->config;
@@ -213,6 +220,7 @@ static int pinnacle_i2c_write(const struct device *device, const uint8_t addr,
   return i2c_reg_write_byte_dt(&config->bus.i2c,
                                reg_access(PINNACLE_WRITE, addr), value);
 }
+#endif // DT_ANY_INST_ON_BUS_STATUS_OKAY(i2c)
 
 static int pinnacle_clear_status(const struct device *device) {
   const struct pinnacle_zfilter_config *config = device->config;
