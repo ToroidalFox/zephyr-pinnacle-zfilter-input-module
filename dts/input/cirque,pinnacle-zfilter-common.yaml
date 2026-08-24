@@ -1,4 +1,7 @@
 properties:
+  data-ready-gpio:
+    type: phandle-array
+
   sensitivity:
     type: string
     default: "1x"
@@ -7,6 +10,14 @@ properties:
       - "2x"
       - "3x"
       - "4x"
+
+  invert-x:
+    type: boolean
+  invert-y:
+    type: boolean
+  swap-xy:
+    type: boolean
+
   clamp-x-min:
     type: int
     default: 128
