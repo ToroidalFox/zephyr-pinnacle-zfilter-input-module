@@ -30,6 +30,7 @@ static inline uint8_t reg_access(const uint8_t flag, const uint8_t addr) {
 #define PINNACLE_REG_Z_IDLE 0x0A
 #define PINNACLE_REG_PACKET_BYTE0 0x12
 #define PINNACLE_REG_PACKET_BYTE1 0x13
+#define PINNACLE_REG_PACKET_BYTE2 0x14
 #define PINNACLE_REG_ERA_VALUE 0x1B
 #define PINNACLE_REG_ERA_HIGH_BYTE 0x1C
 #define PINNACLE_REG_ERA_LOW_BYTE 0x1D
@@ -126,11 +127,9 @@ struct abs_touch {
   uint16_t x;
   uint16_t y;
   uint16_t z;
-  uint8_t button;
 };
 static bool is_valid(struct abs_touch *touch) {
   return touch->z > zmap_lerp(touch->x, touch->y);
-  return false;
 }
 
 struct pinnacle_bus {
@@ -160,6 +159,10 @@ struct pinnacle_zfilter_config {
   bool invert_y;
   bool swap_xy;
 
+  // z idle packet count is always 1. instead of using the number of packets as
+  // pseudo-timing data, downstream input processor should rely on zephyr's
+  // `ticks` and conversion macro/fn.
+
   uint16_t clamp_x_min;
   uint16_t clamp_x_max;
   uint16_t clamp_y_min;
@@ -169,7 +172,8 @@ struct pinnacle_zfilter_config {
 struct pinnacle_zfilter_data {
   struct device *device;
   struct gpio_callback gpio_callback;
-  struct k_work *callback_work;
+  struct k_work callback_work;
+  bool was_invalid;
 };
 
 static int set_gpio_interrrupt(const struct device *device, const bool enable) {
@@ -258,7 +262,11 @@ static int pinnacle_i2c_write(const struct device *device, const uint8_t addr,
 
 static inline int pinnacle_clear_status(const struct device *device) {
   const struct pinnacle_zfilter_config *config = device->config;
-  return config->bus.write(device, PINNACLE_REG_STATUS1, 0);
+  int return_code = config->bus.write(device, PINNACLE_REG_STATUS1, 0);
+  if (return_code < 0) {
+    LOG_ERR("failed to clear SW_DR");
+  };
+  return return_code;
 }
 
 static int pinnacle_era_read(const struct device *device, const uint16_t addr,
@@ -340,6 +348,19 @@ static int pinnacle_era_write(const struct device *device, const uint16_t addr,
   return return_code;
 }
 
+// @param packet 4 byte buffer that contains packet
+static inline struct abs_touch packet_to_abs_touch(uint8_t *packet) {
+  struct abs_touch touch;
+  // byte1: xxxxxxxx (x low bits)
+  // byte2: yyyyyyyy (y low bits)
+  // byte3: yyyyxxxx (y high bits and x high bits)
+  // byte4: __zzzzzz (z)
+  touch.x = packet[0] | ((packet[2] & 0b00001111) << 8);
+  touch.y = packet[1] | ((packet[2] & 0b11110000) << 4);
+  touch.z = packet[3] & 0b00111111;
+  return touch;
+}
+
 static void clamp_touch(const struct device *device, struct abs_touch *touch) {
   const struct pinnacle_zfilter_config *config = device->config;
 
@@ -349,14 +370,47 @@ static void clamp_touch(const struct device *device, struct abs_touch *touch) {
 
 static void pinnacle_zfilter_fetch_and_report(const struct device *device) {
   const struct pinnacle_zfilter_config *config = device->config;
-  uint8_t raw[4];
+  struct pinnacle_zfilter_data *data = device->data;
+  uint8_t packet[4];
   int return_code;
 
-  // fetch
-  config->bus.read(device, PINNACLE_REG_PACKET_BYTE0, raw, 4);
+  config->bus.read(device, PINNACLE_REG_PACKET_BYTE2, packet, 4);
+  if (return_code < 0) {
+    LOG_ERR("failed to read packet (%d)", return_code);
+    return;
+  };
+
+  pinnacle_clear_status(device);
   if (return_code < 0) {
     return;
   };
+
+  struct abs_touch touch = packet_to_abs_touch(packet);
+
+  if (is_valid(&touch)) {
+    data->was_invalid = false;
+    input_report_abs(device, INPUT_ABS_X, touch.x, false, K_FOREVER);
+    input_report_abs(device, INPUT_ABS_Y, touch.y, false, K_FOREVER);
+    input_report_abs(device, INPUT_ABS_Z, touch.z, true, K_FOREVER);
+  } else {
+    if (data->was_invalid) {
+      // do nothing
+    } else {
+      // (0, 0, 0) to indicate that the finger is lifted, set `was_invalid` to
+      // `true` so that this report does not get sent multiple times.
+      data->was_invalid = true;
+      input_report_abs(device, INPUT_ABS_X, 0, false, K_FOREVER);
+      input_report_abs(device, INPUT_ABS_Y, 0, false, K_FOREVER);
+      input_report_abs(device, INPUT_ABS_Z, 0, true, K_FOREVER);
+    }
+  }
+}
+
+static void pinnacle_zfilter_work_handler(struct k_work *work) {
+  struct pinnacle_zfilter_data *data =
+      CONTAINER_OF(work, struct pinnacle_zfilter_data, callback_work);
+
+  pinnacle_zfilter_fetch_and_report(data->device);
 }
 
 static void pinnacle_zfilter_gpio_callback(const struct device *device,
@@ -365,7 +419,7 @@ static void pinnacle_zfilter_gpio_callback(const struct device *device,
   struct pinnacle_zfilter_data *data =
       CONTAINER_OF(gpio_callback, struct pinnacle_zfilter_data, gpio_callback);
 
-  k_work_submit(data->callback_work);
+  k_work_submit(&data->callback_work);
 }
 
 static uint8_t pinnacle_construct_feed_config1(const bool invert_x,
@@ -458,6 +512,7 @@ static int pinnacle_init_gpio_callback(const struct device *device) {
   const struct gpio_dt_spec *gpio = &config->data_ready_gpio;
 
   data->device = (struct device *)device;
+  data->callback_work.handler = pinnacle_zfilter_work_handler;
   int return_code;
 
   if (!gpio_is_ready_dt(gpio)) {
@@ -493,7 +548,10 @@ static int pinnacle_init_gpio_callback(const struct device *device) {
 
 static int pinnacle_zfilter_init(const struct device *device) {
   const struct pinnacle_zfilter_config *config = device->config;
+  struct pinnacle_zfilter_data *data = device->data;
   int return_code;
+
+  data->was_invalid = false;
 
   uint8_t firmware_info[2];
   return_code =
