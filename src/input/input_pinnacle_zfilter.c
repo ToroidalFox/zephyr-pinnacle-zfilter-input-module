@@ -592,7 +592,17 @@ static int pinnacle_zfilter_init(const struct device *device) {
     return return_code;
   }
 
-  pinnacle_recalibrate(device);
+  return_code = pinnacle_set_sensitivity(device);
+  if (return_code < 0) {
+    LOG_ERR("failed to set ADC sensitivity (%d)", return_code);
+    return return_code;
+  }
+
+  return_code = pinnacle_recalibrate(device);
+  if (return_code < 0) {
+    LOG_ERR("failed to recalibrate (%d)", return_code);
+    return return_code;
+  }
 
   return pinnacle_init_gpio_callback(device);
 }
@@ -637,5 +647,3 @@ static int pinnacle_zfilter_init(const struct device *device) {
   BUILD_ASSERT(DT_INST_PROP(n, clamp_y_max) <= Y_MAX,                          \
                "assert failed: clamp-y-max < Y_MAX(1536)");
 // clang-format on
-
-// #define FORMAT \
