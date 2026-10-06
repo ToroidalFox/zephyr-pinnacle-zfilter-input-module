@@ -1,2 +1,2 @@
 compatible: "cirque,pinnacle-zfilter"
-include: ["i2c-device.yaml", "cirque,pinnacle-common.yaml"]
+include: ["i2c-device.yaml", "cirque,pinnacle-zfilter-common.yaml"]
