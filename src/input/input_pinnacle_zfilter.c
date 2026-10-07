@@ -1,3 +1,6 @@
+#include "zephyr/devicetree.h"
+#define DT_DRV_COMPAT cirque_pinnacle_zfilter
+
 // #include <zephyr/init.h>
 #include <zephyr/dt-bindings/input/input-event-codes.h>
 #include <zephyr/input/input.h>
@@ -374,7 +377,7 @@ static void pinnacle_zfilter_fetch_and_report(const struct device *device) {
   uint8_t packet[4];
   int return_code;
 
-  config->bus.read(device, PINNACLE_REG_PACKET_BYTE2, packet, 4);
+  return_code = config->bus.read(device, PINNACLE_REG_PACKET_BYTE2, packet, 4);
   if (return_code < 0) {
     LOG_ERR("failed to read packet (%d)", return_code);
     return;
@@ -647,3 +650,4 @@ static int pinnacle_zfilter_init(const struct device *device) {
   BUILD_ASSERT(DT_INST_PROP(n, clamp_y_max) <= Y_MAX,                          \
                "assert failed: clamp-y-max < Y_MAX(1536)");
 // clang-format on
+DT_INST_FOREACH_STATUS_OKAY(PINNACLE_ZFILTER_INST)
