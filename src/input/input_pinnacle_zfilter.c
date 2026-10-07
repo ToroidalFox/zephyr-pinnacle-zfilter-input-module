@@ -640,7 +640,7 @@ static int pinnacle_zfilter_init(const struct device *device) {
   DEVICE_DT_INST_DEFINE(                                                       \
       n, pinnacle_zfilter_init, NULL, &pinnacle_zfilter_data_##n,              \
       &pinnacle_zfilter_config_##n, POST_KERNEL, INPUT_INIT_PRIORITY,          \
-      &input_processor_kinetic_xy_driver_api);                                 \
+      NULL);                                                                   \
   BUILD_ASSERT(DT_INST_PROP(n, clamp_x_min) < DT_INST_PROP(n, clamp_x_max),    \
                "assert failed: clamp-x-min < clamp-x-max");                    \
   BUILD_ASSERT(DT_INST_PROP(n, clamp_y_min) < DT_INST_PROP(n, clamp_y_max),    \
