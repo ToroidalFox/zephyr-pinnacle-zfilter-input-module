@@ -621,9 +621,10 @@ static int pinnacle_zfilter_init(const struct device *device) {
                   ())                                                          \
       COND_CODE_1(                                                             \
           DT_INST_ON_BUS(n, spi),                                              \
-          (.bus = {.i2c = SPI_DT_SPEC_INST_GET(                                \
-                       n, (SPI_OP_MODE_CONTROLLER | SPI_TRANSFER_MSB |         \
-                           SPI_MODE_CPHA | SPI_WORD_SET(8))),                  \
+          (.bus = {.spi = SPI_DT_SPEC_INST_GET(                                \
+                       n, (SPI_OP_MODE_MASTER | SPI_TRANSFER_MSB |             \
+                           SPI_MODE_CPHA | SPI_WORD_SET(8)),                   \
+                       0),                                                     \
                    .read = pinnacle_spi_read,                                  \
                    .write = pinnacle_spi_write}, ),                            \
           ())                                                                  \
