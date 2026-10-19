@@ -1,4 +1,3 @@
-#include "zephyr/devicetree.h"
 #define DT_DRV_COMPAT cirque_pinnacle_zfilter
 
 // #include <zephyr/init.h>
@@ -389,6 +388,7 @@ static void pinnacle_zfilter_fetch_and_report(const struct device *device) {
   };
 
   struct abs_touch touch = packet_to_abs_touch(packet);
+  clamp_touch(device, &touch);
 
   if (is_valid(&touch)) {
     data->was_invalid = false;
@@ -640,7 +640,7 @@ static int pinnacle_zfilter_init(const struct device *device) {
   };                                                                           \
   DEVICE_DT_INST_DEFINE(                                                       \
       n, pinnacle_zfilter_init, NULL, &pinnacle_zfilter_data_##n,              \
-      &pinnacle_zfilter_config_##n, POST_KERNEL, INPUT_INIT_PRIORITY,          \
+      &pinnacle_zfilter_config_##n, POST_KERNEL, CONFIG_INPUT_INIT_PRIORITY,   \
       NULL);                                                                   \
   BUILD_ASSERT(DT_INST_PROP(n, clamp_x_min) < DT_INST_PROP(n, clamp_x_max),    \
                "assert failed: clamp-x-min < clamp-x-max");                    \
