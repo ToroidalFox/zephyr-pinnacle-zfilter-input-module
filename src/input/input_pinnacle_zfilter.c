@@ -155,7 +155,7 @@ enum adc_sensitivity {
 
 struct pinnacle_zfilter_config {
   const struct pinnacle_bus bus;
-  const struct gpio_dt_spec data_ready_gpio;
+  const struct gpio_dt_spec data_ready_gpios;
 
   enum adc_sensitivity sensitivity;
   bool invert_x;
@@ -182,7 +182,7 @@ struct pinnacle_zfilter_data {
 static int set_gpio_interrrupt(const struct device *device, const bool enable) {
   const struct pinnacle_zfilter_config *config = device->config;
   int return_code = gpio_pin_interrupt_configure_dt(
-      &config->data_ready_gpio,
+      &config->data_ready_gpios,
       enable ? GPIO_INT_EDGE_TO_ACTIVE : GPIO_INT_DISABLE);
 
   if (return_code < 0)
@@ -512,7 +512,7 @@ static int pinnacle_recalibrate(const struct device *device) {
 static int pinnacle_init_gpio_callback(const struct device *device) {
   struct pinnacle_zfilter_data *data = device->data;
   const struct pinnacle_zfilter_config *config = device->config;
-  const struct gpio_dt_spec *gpio = &config->data_ready_gpio;
+  const struct gpio_dt_spec *gpio = &config->data_ready_gpios;
 
   data->device = (struct device *)device;
   data->callback_work.handler = pinnacle_zfilter_work_handler;
@@ -627,7 +627,7 @@ static int pinnacle_zfilter_init(const struct device *device) {
                    .read = pinnacle_spi_read,                                  \
                    .write = pinnacle_spi_write}, ),                            \
           ())                                                                  \
-      .data_ready_gpio = GPIO_DT_SPEC_INST_GET_OR(n, data_ready_gpio, {}),     \
+      .data_ready_gpios = GPIO_DT_SPEC_INST_GET_OR(n, data_ready_gpios, {}),   \
       .sensitivity = DT_INST_ENUM_IDX(n, sensitivity),                         \
       .invert_x = DT_INST_PROP(n, invert_x),                                   \
       .invert_y = DT_INST_PROP(n, invert_y),                                   \

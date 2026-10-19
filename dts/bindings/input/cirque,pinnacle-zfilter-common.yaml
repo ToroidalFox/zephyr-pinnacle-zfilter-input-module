@@ -1,5 +1,5 @@
 properties:
-  data-ready-gpio:
+  data-ready-gpios:
     type: phandle-array
 
   sensitivity:
