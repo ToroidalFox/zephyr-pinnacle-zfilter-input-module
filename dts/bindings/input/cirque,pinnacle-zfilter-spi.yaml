@@ -1,2 +1,3 @@
+description: Driver for Cirque Pinnacle (SPI)
 compatible: "cirque,pinnacle-zfilter"
 include: ["spi-device.yaml", "cirque,pinnacle-zfilter-common.yaml"]
