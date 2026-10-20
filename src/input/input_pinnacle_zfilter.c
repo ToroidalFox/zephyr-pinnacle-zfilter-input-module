@@ -38,6 +38,11 @@ static inline uint8_t reg_access(const uint8_t flag, const uint8_t addr) {
 #define PINNACLE_REG_ERA_LOW_BYTE 0x1D
 #define PINNACLE_REG_ERA_CONTROL 0x1E
 
+#define PINNACLE_FIRMWARE_ID 0x07
+
+// Status1 (register 0x02 data)
+#define PINNACLE_STATUS1_SW_CC BIT(3)
+
 // I have no idea where are people finding this value other than the reference
 // implementation. Where is the documentation for this?
 #define PINNACLE_ERA_REG_CONFIG 0x0187
@@ -72,6 +77,9 @@ static inline uint8_t reg_access(const uint8_t flag, const uint8_t addr) {
 // #define PINNACLE_ERA_CONTROL_READ_AUTO_INCREMENT BIT(2)
 // #define PINNACLE_ERA_CONTROL_WRITE_AUTO_INCREMENT BIT(3)
 #define PINNACLE_ERA_CONTROL_COMPLETE 0x00
+
+#define PINNACLE_CALIBRATION_RETRY_COUNT 20
+#define PINNACLE_CALIBRATION_POLL_MS 10
 
 #define X_MAX 2048 // exclusive, actual max report 2047
 #define Y_MAX 1536 // exclusive, actual max report 1535
@@ -178,24 +186,6 @@ struct pinnacle_zfilter_data {
   bool was_invalid;
 };
 
-static int set_gpio_interrrupt(const struct device *device, const bool enable) {
-  const struct pinnacle_zfilter_config *config = device->config;
-  int return_code = gpio_pin_interrupt_configure_dt(
-      &config->data_ready_gpios,
-      enable ? GPIO_INT_EDGE_TO_ACTIVE : GPIO_INT_DISABLE);
-
-  if (return_code < 0)
-    LOG_ERR("failed to set gpio interrupt to %s", enable ? "true" : "false");
-
-  return return_code;
-}
-static int enable_gpio_interrupt(const struct device *device) {
-  return set_gpio_interrrupt(device, true);
-}
-static int disable_gpio_interrupt(const struct device *device) {
-  return set_gpio_interrrupt(device, false);
-}
-
 #if DT_ANY_INST_ON_BUS_STATUS_OKAY(spi)
 static int pinnacle_spi_read(const struct device *device, const uint8_t addr,
                              uint8_t *buffer, const uint8_t len) {
@@ -271,11 +261,25 @@ static inline int pinnacle_clear_status(const struct device *device) {
   return return_code;
 }
 
+static int pinnacle_wait_for_calibration(const struct device *device) {
+  const struct pinnacle_zfilter_config *config = device->config;
+
+  for (int i = 0; i < PINNACLE_CALIBRATION_RETRY_COUNT; i++) {
+    uint8_t status;
+    if (config->bus.read(device, PINNACLE_REG_STATUS1, &status, 1) == 0 &&
+        (status & PINNACLE_STATUS1_SW_CC)) {
+      return 0;
+    }
+    k_msleep(PINNACLE_CALIBRATION_POLL_MS);
+  }
+
+  return -EIO;
+}
+
 static int pinnacle_era_read(const struct device *device, const uint16_t addr,
                              uint8_t *buffer) {
   const struct pinnacle_zfilter_config *config = device->config;
   int return_code;
-  disable_gpio_interrupt(device);
 
   return_code = config->bus.write(device, PINNACLE_REG_ERA_HIGH_BYTE,
                                   (uint8_t)(addr >> 8));
@@ -307,7 +311,6 @@ static int pinnacle_era_read(const struct device *device, const uint16_t addr,
     return return_code;
 
   return_code = pinnacle_clear_status(device);
-  enable_gpio_interrupt(device);
   return return_code;
 }
 
@@ -315,7 +318,6 @@ static int pinnacle_era_write(const struct device *device, const uint16_t addr,
                               uint8_t value) {
   const struct pinnacle_zfilter_config *config = device->config;
   int return_code;
-  disable_gpio_interrupt(device);
 
   return_code = config->bus.write(device, PINNACLE_REG_ERA_VALUE, value);
   if (return_code < 0)
@@ -346,7 +348,6 @@ static int pinnacle_era_write(const struct device *device, const uint16_t addr,
   }
 
   return_code = pinnacle_clear_status(device);
-  enable_gpio_interrupt(device);
   return return_code;
 }
 
@@ -529,19 +530,19 @@ static int pinnacle_init_gpio_callback(const struct device *device) {
     return return_code;
   }
 
-  return_code = gpio_pin_interrupt_configure_dt(gpio, GPIO_INT_EDGE_TO_ACTIVE);
-  if (return_code < 0) {
-    LOG_ERR("failed to configure interrupt for %s(pin %d)", gpio->port->name,
-            gpio->pin);
-    return return_code;
-  }
-
   gpio_init_callback(&data->gpio_callback, pinnacle_zfilter_gpio_callback,
                      BIT(gpio->pin));
 
   return_code = gpio_add_callback(gpio->port, &data->gpio_callback);
   if (return_code < 0) {
     LOG_ERR("failed to add callback for %s(pin %d)", gpio->port->name,
+            gpio->pin);
+    return return_code;
+  }
+
+  return_code = gpio_pin_interrupt_configure_dt(gpio, GPIO_INT_EDGE_TO_ACTIVE);
+  if (return_code < 0) {
+    LOG_ERR("failed to configure interrupt for %s(pin %d)", gpio->port->name,
             gpio->pin);
     return return_code;
   }
@@ -553,21 +554,30 @@ static int pinnacle_zfilter_init(const struct device *device) {
   const struct pinnacle_zfilter_config *config = device->config;
   struct pinnacle_zfilter_data *data = device->data;
   int return_code;
+  uint8_t firmware_info[2];
 
   data->was_invalid = false;
 
-  uint8_t firmware_info[2];
   return_code =
       config->bus.read(device, PINNACLE_REG_FIRMWARE_ID, firmware_info, 2);
-
   if (return_code < 0) {
     LOG_ERR("failed to read firmware info (%d)", return_code);
-  } else {
-    LOG_DBG("firmware id: 0x%02x, version: 0x%02x", firmware_info[0],
-            firmware_info[1]);
+    return return_code;
   }
 
-  pinnacle_clear_status(device);
+  if (firmware_info[0] != PINNACLE_FIRMWARE_ID) {
+    LOG_ERR("unexpected firmware id 0x%02x", firmware_info[0]);
+    return -ENODEV;
+  }
+
+  LOG_DBG("firmware id: 0x%02x, version: 0x%02x", firmware_info[0],
+          firmware_info[1]);
+
+  return_code = pinnacle_clear_status(device);
+  if (return_code < 0) {
+    return return_code;
+  }
+
   k_usleep(50);
   return_code = config->bus.write(device, PINNACLE_REG_SYS_CONFIG1,
                                   PINNACLE_SYS_CONFIG1_RESET);
@@ -575,23 +585,15 @@ static int pinnacle_zfilter_init(const struct device *device) {
     LOG_ERR("failed to write SysConfig1 (%d)", return_code);
     return return_code;
   }
-  return_code =
-      config->bus.write(device, PINNACLE_REG_FEED_CONFIG2,
-                        pinnacle_construct_feed_config2(config->swap_xy));
+
+  return_code = pinnacle_wait_for_calibration(device);
   if (return_code < 0) {
-    LOG_ERR("failed to write FeedConfig2 (%d)", return_code);
+    LOG_ERR("calibration did not complete (%d)", return_code);
     return return_code;
   }
-  return_code = config->bus.write(
-      device, PINNACLE_REG_FEED_CONFIG1,
-      pinnacle_construct_feed_config1(config->invert_x, config->invert_y));
+
+  return_code = pinnacle_clear_status(device);
   if (return_code < 0) {
-    LOG_ERR("failed to write FeedConfig1 (%d)", return_code);
-    return return_code;
-  }
-  return_code = config->bus.write(device, PINNACLE_REG_Z_IDLE, 1);
-  if (return_code < 0) {
-    LOG_ERR("failed to write ZIdle (%d)", return_code);
     return return_code;
   }
 
@@ -604,6 +606,39 @@ static int pinnacle_zfilter_init(const struct device *device) {
   return_code = pinnacle_recalibrate(device);
   if (return_code < 0) {
     LOG_ERR("failed to recalibrate (%d)", return_code);
+    return return_code;
+  }
+
+  return_code = pinnacle_clear_status(device);
+  if (return_code < 0) {
+    return return_code;
+  }
+
+  return_code = config->bus.write(device, PINNACLE_REG_SYS_CONFIG1, 0);
+  if (return_code < 0) {
+    LOG_ERR("failed to write SysConfig1 (%d)", return_code);
+    return return_code;
+  }
+
+  return_code =
+      config->bus.write(device, PINNACLE_REG_FEED_CONFIG2,
+                        pinnacle_construct_feed_config2(config->swap_xy));
+  if (return_code < 0) {
+    LOG_ERR("failed to write FeedConfig2 (%d)", return_code);
+    return return_code;
+  }
+
+  return_code = config->bus.write(device, PINNACLE_REG_Z_IDLE, 1);
+  if (return_code < 0) {
+    LOG_ERR("failed to write ZIdle (%d)", return_code);
+    return return_code;
+  }
+
+  return_code = config->bus.write(
+      device, PINNACLE_REG_FEED_CONFIG1,
+      pinnacle_construct_feed_config1(config->invert_x, config->invert_y));
+  if (return_code < 0) {
+    LOG_ERR("failed to write FeedConfig1 (%d)", return_code);
     return return_code;
   }
 
