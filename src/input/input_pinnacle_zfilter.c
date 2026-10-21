@@ -364,7 +364,8 @@ static inline struct abs_touch packet_to_abs_touch(uint8_t *packet) {
   return touch;
 }
 
-static void clamp_touch(const struct device *device, struct abs_touch *touch) {
+static inline void clamp_touch(const struct device *device,
+                               struct abs_touch *touch) {
   const struct pinnacle_zfilter_config *config = device->config;
 
   touch->x = CLAMP(touch->x, config->clamp_x_min, config->clamp_x_max - 1);
@@ -393,8 +394,13 @@ static void pinnacle_zfilter_fetch_and_report(const struct device *device) {
 
   if (is_valid(&touch)) {
     data->was_invalid = false;
-    input_report_abs(device, INPUT_ABS_X, touch.x, false, K_FOREVER);
-    input_report_abs(device, INPUT_ABS_Y, touch.y, false, K_FOREVER);
+    if (config->swap_xy) {
+      input_report_abs(device, INPUT_ABS_X, touch.y, false, K_FOREVER);
+      input_report_abs(device, INPUT_ABS_Y, touch.x, false, K_FOREVER);
+    } else {
+      input_report_abs(device, INPUT_ABS_X, touch.x, false, K_FOREVER);
+      input_report_abs(device, INPUT_ABS_Y, touch.y, false, K_FOREVER);
+    }
     input_report_abs(device, INPUT_ABS_Z, touch.z, true, K_FOREVER);
   } else {
     if (data->was_invalid) {
@@ -426,8 +432,8 @@ static void pinnacle_zfilter_gpio_callback(const struct device *device,
   k_work_submit(&data->callback_work);
 }
 
-static uint8_t pinnacle_construct_feed_config1(const bool invert_x,
-                                               const bool invert_y) {
+static inline uint8_t pinnacle_construct_feed_config1(const bool invert_x,
+                                                      const bool invert_y) {
   uint8_t feed_config1 = PINNACLE_FEED_CONFIG1_FEED_ENABLE |
                          PINNACLE_FEED_CONFIG1_DATA_MODE_ABSOLUTE;
   feed_config1 |= invert_x ? PINNACLE_FEED_CONFIG1_X_INVERT : 0x00;
@@ -435,12 +441,11 @@ static uint8_t pinnacle_construct_feed_config1(const bool invert_x,
   return feed_config1;
 }
 
-static uint8_t pinnacle_construct_feed_config2(const bool swap_xy) {
+static inline uint8_t pinnacle_construct_feed_config2() {
   uint8_t feed_config2 = PINNACLE_FEED_CONFIG2_ALL_TAPS_DISABLE |
                          PINNACLE_FEED_CONFIG2_SECONDARY_TAP_DISABLE |
                          PINNACLE_FEED_CONFIG2_SCROLL_DISABLE |
                          PINNACLE_FEED_CONFIG2_GLIDE_EXTEND_DISABLE;
-  feed_config2 |= swap_xy ? PINNACLE_FEED_CONFIG2_SWAP_X_AND_Y : 0x00;
   return feed_config2;
 }
 
@@ -620,9 +625,8 @@ static int pinnacle_zfilter_init(const struct device *device) {
     return return_code;
   }
 
-  return_code =
-      config->bus.write(device, PINNACLE_REG_FEED_CONFIG2,
-                        pinnacle_construct_feed_config2(config->swap_xy));
+  return_code = config->bus.write(device, PINNACLE_REG_FEED_CONFIG2,
+                                  pinnacle_construct_feed_config2());
   if (return_code < 0) {
     LOG_ERR("failed to write FeedConfig2 (%d)", return_code);
     return return_code;
