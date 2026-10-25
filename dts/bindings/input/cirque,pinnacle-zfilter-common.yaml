@@ -15,8 +15,6 @@ properties:
     type: boolean
   invert-y:
     type: boolean
-  swap-xy:
-    type: boolean
 
   clamp-x-min:
     type: int
@@ -30,3 +28,14 @@ properties:
   clamp-y-max:
     type: int
     default: 1472
+
+  x-div:
+    type: int
+    default: 4
+    description: |
+      x value will be divided by this value.
+  y-div:
+    type: int
+    default: 3
+    description: |
+      y value will be divided by this value.

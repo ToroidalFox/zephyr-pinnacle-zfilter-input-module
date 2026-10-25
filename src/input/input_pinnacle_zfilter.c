@@ -167,7 +167,6 @@ struct pinnacle_zfilter_config {
   enum adc_sensitivity sensitivity;
   bool invert_x;
   bool invert_y;
-  bool swap_xy;
 
   // z idle packet count is always 1. instead of using the number of packets as
   // pseudo-timing data, downstream input processor should rely on zephyr's
@@ -177,6 +176,14 @@ struct pinnacle_zfilter_config {
   uint16_t clamp_x_max;
   uint16_t clamp_y_min;
   uint16_t clamp_y_max;
+
+  uint16_t x_div;
+  uint16_t y_div;
+};
+
+struct axis {
+  int16_t init_raw;
+  int16_t prev;
 };
 
 struct pinnacle_zfilter_data {
@@ -184,6 +191,10 @@ struct pinnacle_zfilter_data {
   struct gpio_callback gpio_callback;
   struct k_work callback_work;
   bool was_invalid;
+
+  struct axis x;
+  struct axis y;
+  int16_t z;
 };
 
 #if DT_ANY_INST_ON_BUS_STATUS_OKAY(spi)
@@ -372,6 +383,11 @@ static inline void clamp_touch(const struct device *device,
   touch->y = CLAMP(touch->y, config->clamp_y_min, config->clamp_y_max - 1);
 }
 
+static inline int16_t axis_div(int16_t min, int16_t init, int16_t div,
+                               int16_t value) {
+  return (init - min) / div + (value - init) / div;
+}
+
 static void pinnacle_zfilter_fetch_and_report(const struct device *device) {
   const struct pinnacle_zfilter_config *config = device->config;
   struct pinnacle_zfilter_data *data = device->data;
@@ -393,15 +409,27 @@ static void pinnacle_zfilter_fetch_and_report(const struct device *device) {
   clamp_touch(device, &touch);
 
   if (is_valid(&touch)) {
-    data->was_invalid = false;
-    if (config->swap_xy) {
-      input_report_abs(device, INPUT_ABS_X, touch.y, false, K_FOREVER);
-      input_report_abs(device, INPUT_ABS_Y, touch.x, false, K_FOREVER);
+    if (data->was_invalid) { // touch just started
+      data->x.init_raw = touch.x;
+      data->x.prev = (touch.x - config->clamp_x_min) / config->x_div;
+      data->y.init_raw = touch.y;
+      data->y.prev = (touch.y - config->clamp_y_min) / config->y_div;
+      input_report_rel(device, INPUT_REL_X, 0, false, K_FOREVER);
+      input_report_rel(device, INPUT_REL_Y, 0, false, K_FOREVER);
     } else {
-      input_report_abs(device, INPUT_ABS_X, touch.x, false, K_FOREVER);
-      input_report_abs(device, INPUT_ABS_Y, touch.y, false, K_FOREVER);
+      int16_t x_now = axis_div(config->clamp_x_min, data->x.init_raw,
+                               config->x_div, touch.x);
+      int16_t y_now = axis_div(config->clamp_y_min, data->y.init_raw,
+                               config->y_div, touch.y);
+      input_report_rel(device, INPUT_REL_X, x_now - data->x.prev, false,
+                       K_FOREVER);
+      input_report_rel(device, INPUT_REL_Y, y_now - data->y.prev, false,
+                       K_FOREVER);
+      data->x.prev = x_now;
+      data->y.prev = y_now;
     }
     input_report_abs(device, INPUT_ABS_Z, touch.z, true, K_FOREVER);
+    data->was_invalid = false;
   } else {
     if (data->was_invalid) {
       // do nothing
@@ -409,8 +437,8 @@ static void pinnacle_zfilter_fetch_and_report(const struct device *device) {
       // (0, 0, 0) to indicate that the finger is lifted, set `was_invalid` to
       // `true` so that this report does not get sent multiple times.
       data->was_invalid = true;
-      input_report_abs(device, INPUT_ABS_X, 0, false, K_FOREVER);
-      input_report_abs(device, INPUT_ABS_Y, 0, false, K_FOREVER);
+      input_report_rel(device, INPUT_REL_X, 0, false, K_FOREVER);
+      input_report_rel(device, INPUT_REL_Y, 0, false, K_FOREVER);
       input_report_abs(device, INPUT_ABS_Z, 0, true, K_FOREVER);
     }
   }
@@ -561,7 +589,7 @@ static int pinnacle_zfilter_init(const struct device *device) {
   int return_code;
   uint8_t firmware_info[2];
 
-  data->was_invalid = false;
+  data->was_invalid = true;
 
   return_code =
       config->bus.read(device, PINNACLE_REG_FIRMWARE_ID, firmware_info, 2);
@@ -671,11 +699,12 @@ static int pinnacle_zfilter_init(const struct device *device) {
       .sensitivity = DT_INST_ENUM_IDX(n, sensitivity),                         \
       .invert_x = DT_INST_PROP(n, invert_x),                                   \
       .invert_y = DT_INST_PROP(n, invert_y),                                   \
-      .swap_xy = DT_INST_PROP(n, swap_xy),                                     \
       .clamp_x_min = DT_INST_PROP(n, clamp_x_min),                             \
       .clamp_x_max = DT_INST_PROP(n, clamp_x_max),                             \
       .clamp_y_min = DT_INST_PROP(n, clamp_y_min),                             \
       .clamp_y_max = DT_INST_PROP(n, clamp_y_max),                             \
+      .x_div = DT_INST_PROP(n, x_div),                                         \
+      .y_div = DT_INST_PROP(n, y_div),                                         \
   };                                                                           \
   DEVICE_DT_INST_DEFINE(                                                       \
       n, pinnacle_zfilter_init, NULL, &pinnacle_zfilter_data_##n,              \
@@ -688,6 +717,10 @@ static int pinnacle_zfilter_init(const struct device *device) {
   BUILD_ASSERT(DT_INST_PROP(n, clamp_x_max) <= X_MAX,                          \
                "assert failed: clamp-x-max < X_MAX(2048)");                    \
   BUILD_ASSERT(DT_INST_PROP(n, clamp_y_max) <= Y_MAX,                          \
-               "assert failed: clamp-y-max < Y_MAX(1536)");
+               "assert failed: clamp-y-max < Y_MAX(1536)");                    \
+  BUILD_ASSERT(DT_INST_PROP(n, x_div) > 0,                                     \
+               "assert failed: x-div > 0");                                    \
+  BUILD_ASSERT(DT_INST_PROP(n, y_div) > 0,                                     \
+               "assert failed: y-div > 0");
 // clang-format on
 DT_INST_FOREACH_STATUS_OKAY(PINNACLE_ZFILTER_INST)
