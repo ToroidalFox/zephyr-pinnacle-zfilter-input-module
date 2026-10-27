@@ -13,7 +13,7 @@ maxz = 32
 y, x = np.indices((rows, columns))
 r = np.sqrt((x / columns) ** 2 + (y / rows) ** 2)
 
-zval = r**0.8
+zval = r**1.2
 
 map = maxz * np.clip(1 - zval, 0.0, 1)
 
