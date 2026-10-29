@@ -41,6 +41,7 @@ static inline uint8_t reg_access(const uint8_t flag, const uint8_t addr) {
 #define PINNACLE_FIRMWARE_ID 0x07
 
 // Status1 (register 0x02 data)
+#define PINNACLE_STATUS1_SW_DR BIT(2)
 #define PINNACLE_STATUS1_SW_CC BIT(3)
 
 // I have no idea where are people finding this value other than the reference
@@ -80,6 +81,9 @@ static inline uint8_t reg_access(const uint8_t flag, const uint8_t addr) {
 
 #define PINNACLE_CALIBRATION_RETRY_COUNT 20
 #define PINNACLE_CALIBRATION_POLL_MS 10
+
+#define PINNACLE_ERA_RETRY_COUNT 20
+#define PINNACLE_ERA_POLL_MS 10
 
 #define X_MAX 2048 // exclusive, actual max report 2047
 #define Y_MAX 1536 // exclusive, actual max report 1535
@@ -265,11 +269,7 @@ static int pinnacle_i2c_write(const struct device *device, const uint8_t addr,
 
 static inline int pinnacle_clear_status(const struct device *device) {
   const struct pinnacle_zfilter_config *config = device->config;
-  int return_code = config->bus.write(device, PINNACLE_REG_STATUS1, 0);
-  if (return_code < 0) {
-    LOG_ERR("failed to clear SW_DR");
-  };
-  return return_code;
+  return config->bus.write(device, PINNACLE_REG_STATUS1, 0);
 }
 
 static int pinnacle_wait_for_calibration(const struct device *device) {
@@ -305,8 +305,9 @@ static int pinnacle_era_read(const struct device *device, const uint16_t addr,
   if (return_code < 0)
     return return_code;
 
-  uint8_t control_code;
-  while (true) {
+  uint8_t control_code = 0xFF;
+  int retry;
+  for (retry = 0; retry < PINNACLE_ERA_RETRY_COUNT; retry++) {
     return_code =
         config->bus.read(device, PINNACLE_REG_ERA_CONTROL, &control_code, 1);
     if (return_code < 0)
@@ -314,7 +315,11 @@ static int pinnacle_era_read(const struct device *device, const uint16_t addr,
 
     if (control_code == PINNACLE_ERA_CONTROL_COMPLETE)
       break;
-    k_msleep(10);
+    k_msleep(PINNACLE_ERA_POLL_MS);
+  }
+  if (retry == PINNACLE_ERA_RETRY_COUNT) {
+    LOG_ERR("ERA operation timed out (control 0x%02x)", control_code);
+    return -ETIMEDOUT;
   }
 
   return_code = config->bus.read(device, PINNACLE_REG_ERA_VALUE, buffer, 1);
@@ -322,6 +327,9 @@ static int pinnacle_era_read(const struct device *device, const uint16_t addr,
     return return_code;
 
   return_code = pinnacle_clear_status(device);
+  if (return_code < 0) {
+    LOG_ERR("failed to clear status (%d)", return_code);
+  }
   return return_code;
 }
 
@@ -346,8 +354,9 @@ static int pinnacle_era_write(const struct device *device, const uint16_t addr,
   if (return_code < 0)
     return return_code;
 
-  uint8_t control_code;
-  while (true) {
+  uint8_t control_code = 0xFF;
+  int retry;
+  for (retry = 0; retry < PINNACLE_ERA_RETRY_COUNT; retry++) {
     return_code =
         config->bus.read(device, PINNACLE_REG_ERA_CONTROL, &control_code, 1);
     if (return_code < 0)
@@ -355,10 +364,17 @@ static int pinnacle_era_write(const struct device *device, const uint16_t addr,
 
     if (control_code == PINNACLE_ERA_CONTROL_COMPLETE)
       break;
-    k_msleep(10);
+    k_msleep(PINNACLE_ERA_POLL_MS);
+  }
+  if (retry >= PINNACLE_ERA_RETRY_COUNT) {
+    LOG_ERR("ERA operation timed out (control 0x%02x)", control_code);
+    return -ETIMEDOUT;
   }
 
   return_code = pinnacle_clear_status(device);
+  if (return_code < 0) {
+    LOG_ERR("failed to clear status (%d)", return_code);
+  }
   return return_code;
 }
 
@@ -394,16 +410,26 @@ static void pinnacle_zfilter_fetch_and_report(const struct device *device) {
   uint8_t packet[4];
   int return_code;
 
+  uint8_t status;
+  return_code = config->bus.read(device, PINNACLE_REG_STATUS1, &status, 1);
+  if (return_code < 0) {
+    LOG_ERR("failed to read status (%d)", return_code);
+    return;
+  }
+  if (status == 0xFF || !(status & PINNACLE_STATUS1_SW_DR)) {
+    return;
+  }
+
   return_code = config->bus.read(device, PINNACLE_REG_PACKET_BYTE2, packet, 4);
   if (return_code < 0) {
     LOG_ERR("failed to read packet (%d)", return_code);
     return;
-  };
+  }
 
-  pinnacle_clear_status(device);
+  return_code = pinnacle_clear_status(device);
   if (return_code < 0) {
-    return;
-  };
+    LOG_ERR("failed to clear status (%d)", return_code);
+  }
 
   struct abs_touch touch = packet_to_abs_touch(packet);
   clamp_touch(device, &touch);
@@ -510,7 +536,11 @@ static int pinnacle_set_sensitivity(const struct device *device) {
     return return_code;
   }
 
-  return pinnacle_clear_status(device);
+  return_code = pinnacle_clear_status(device);
+  if (return_code < 0) {
+    LOG_ERR("failed to clear status (%d)", return_code);
+  }
+  return return_code;
 }
 
 static int pinnacle_recalibrate(const struct device *device) {
@@ -529,7 +559,8 @@ static int pinnacle_recalibrate(const struct device *device) {
     return return_code;
   }
 
-  while (true) {
+  int retry;
+  for (retry = 0; retry < PINNACLE_CALIBRATION_RETRY_COUNT; retry++) {
     return_code = config->bus.read(device, PINNACLE_REG_CAL_CONFIG1, &value, 1);
     if (return_code < 0) {
       LOG_ERR("failed to read CalConfig1 (%d)", return_code);
@@ -538,7 +569,11 @@ static int pinnacle_recalibrate(const struct device *device) {
 
     if ((value & 0x01) == 0)
       break;
-    k_msleep(10);
+    k_msleep(PINNACLE_CALIBRATION_POLL_MS);
+  }
+  if (retry == PINNACLE_CALIBRATION_RETRY_COUNT) {
+    LOG_ERR("calibration timed out");
+    return -ETIMEDOUT;
   }
   return 0;
 }
@@ -549,7 +584,7 @@ static int pinnacle_init_gpio_callback(const struct device *device) {
   const struct gpio_dt_spec *gpio = &config->data_ready_gpios;
 
   data->device = (struct device *)device;
-  data->callback_work.handler = pinnacle_zfilter_work_handler;
+  k_work_init(&data->callback_work, pinnacle_zfilter_work_handler);
   int return_code;
 
   if (!gpio_is_ready_dt(gpio)) {
@@ -608,6 +643,7 @@ static int pinnacle_zfilter_init(const struct device *device) {
 
   return_code = pinnacle_clear_status(device);
   if (return_code < 0) {
+    LOG_ERR("failed to clear status (%d)", return_code);
     return return_code;
   }
 
@@ -627,6 +663,7 @@ static int pinnacle_zfilter_init(const struct device *device) {
 
   return_code = pinnacle_clear_status(device);
   if (return_code < 0) {
+    LOG_ERR("failed to clear status (%d)", return_code);
     return return_code;
   }
 
@@ -644,6 +681,7 @@ static int pinnacle_zfilter_init(const struct device *device) {
 
   return_code = pinnacle_clear_status(device);
   if (return_code < 0) {
+    LOG_ERR("failed to clear status (%d)", return_code);
     return return_code;
   }
 
